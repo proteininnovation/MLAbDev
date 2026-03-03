@@ -16,7 +16,7 @@ ML model: Transformer and  VH+VL+HCDR3
 Trainset: public dataset #1 from  (HT Chen, 2024) 
 ![Alt text](images/trainsetsize_performance.png)
 
-# Build ML model and  optimal threshold for binary classification
+# Identifying optimal threshold for binary classification
 ![Alt text](images/optimal_threshold.png)
 
 # Download and install: IPIAbDev package 
