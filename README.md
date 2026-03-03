@@ -8,6 +8,7 @@ IPIAbDev is a highly flexible AI-ML Framework, designed for high-throughput pred
 
 # Build ML model and  optimal threshold for binary classification
 ![Alt text](images/optimal_threshold.png)
+
 # Download and install: IPIAbDev package 
 
 git clone https://github.com/proteininnovation/IPIAbdev.git
