@@ -4,7 +4,8 @@
 IPIAbDev is a highly flexible AI-ML Framework, designed for high-throughput prediction of antibody developability and biophysical properties, with a primary focus on polyreactivity (PSR) and SEC developability, while being extensible to SPR binder, HIC, etc. It integrates multiple antibody-specific protein language models (AbLang2, AntiBERTy, AntiBERTa2, AntiBERTa2-CSSP) for embedding generation and supports a diverse set of classifiers, including XGBoost, Random Forest, 1D-CNN with residual blocks, and Transformer architectures. Key features include automated embedding generation, HCDR3-cluster-stratified k-fold cross-validation to prevent data leakage, model training and prediction for binary classification tasks, and built-in interpretability via Integrated Gradients for residue-level attribution. The package also provides publication-ready visualization of ROC curves, performance metrics (AUC, accuracy, F1, precision, recall), and attribution heatmaps
 
 # Trainset size vs Model performance 
-using public dataset 
+ML model: Transformer and  VH+VL+HCDR3 
+Trainset: public dataset #1 from  (HT Chen, 2024) 
 ![Alt text](images/trainsetsize_performance.png)
 
 # Build ML model and  optimal threshold for binary classification
