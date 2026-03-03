@@ -1,4 +1,3 @@
-# IPIAbDev-ML based developability prediction. 
 
 ![Alt text](SEC/models_final/IPIAbDevOverview.png)
 
