@@ -10,9 +10,6 @@ Full Heavy and Light Chains,  Heavy Chain, CDR3 sequences
 # Sequence Encoding
 Protein Lanuage model embedding, one hot encoding, sequence biophysical properties (molecular weight, charge, Isoelectric Point,..)
 
-# Sequence-based machine learning (ML) models
-Full Heavy and Light Chains,  Heavy Chain, CDR3 sequences
-
 
 # Trainset size vs Model performance 
 ML model: Transformer and  VH+VL+HCDR3 
