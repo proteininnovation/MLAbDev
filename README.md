@@ -14,6 +14,7 @@ Protein Lanuage model embedding, one hot encoding, sequence biophysical properti
 ML model: Transformer and  VH+VL+HCDR3 
 
 Trainset: public dataset #1 from  (HT Chen, 2024) 
+
 ![Alt text](images/trainsetsize_performance.png)
 
 # Identifying optimal threshold for binary classification
