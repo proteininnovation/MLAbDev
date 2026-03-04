@@ -7,7 +7,7 @@ This open source software was developed at The Antibody Platform, Institut for P
 
 Machine Learning Architect and Designer: [Hoan Nguyen, PhD](https://www.linkedin.com/in/hoan-nguyen-82549420/)
 
-Authors and Contact: {Hoan.Nguyen, Andre.Teixeira}@proteininnovation.org
+Authors and Contact: {Hoan.Nguyen, [Andre.Teixeira][}](https://www.linkedin.com/in/andr%C3%A9-a-r-teixeira-6155857/)@proteininnovation.org
 
 
 # Sequence-based ML models and Encoding
