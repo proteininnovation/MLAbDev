@@ -7,6 +7,8 @@ This open source software was developed at The Antibody Platform, Institut for P
 
 Machine Learning Architect and Designer: [Hoan Nguyen, PhD](https://www.linkedin.com/in/hoan-nguyen-82549420/)
 
+Authors and Contact: {Hoan.Nguyen, Andre.Teixeira}@proteininnovation.org
+
 
 # Sequence-based ML models and Encoding
 Full heavy and light chain sequences,  Heavy chain sequences, CDR3 sequences
@@ -84,4 +86,3 @@ python predict_developability.py --predict data/test.xlsx --target sec_filter --
 
 
 
-Contact: {Hoan.Nguyen, Andre.Teixeira}@proteininnovation.org 
