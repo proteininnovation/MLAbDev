@@ -5,7 +5,7 @@ IPIAbDev is a highly flexible AI-ML Framework, designed for high-throughput pred
 
 This open source software was developed at The Antibody Platform, Institut for Protein Innovation,Boston, USA
 
-Machine Learning Architect and Designer: Hoan Nguyen,PhD[(https://www.linkedin.com/in/hoan-nguyen-82549420/)]
+Machine Learning Architect and Designer: [Hoan Nguyen, PhD](https://www.linkedin.com/in/hoan-nguyen-82549420/)
 
 
 # Sequence-based ML models and Encoding
