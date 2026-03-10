@@ -184,11 +184,10 @@ def select_diverse_leads(df, previous_cdr3s, score_col, cdr3_col="HCDR3", count_
         selected_cdr3s.append(cdr3)
     df[selected_col] = False
     df.loc[selected_indices, selected_col] = True
-    print(f"✅ Selected {len(selected_indices)} diverse clones")
     return df
 
 # ====================== 4. LOGOMAKER ======================
-def plot_fancy_logo(cdr3_list, title, filename):
+def plot_fancy_logo(cdr3_list, title, filename, output_folder):
     if not cdr3_list or not LOGOMAKER_AVAILABLE: return
     max_len = max((len(s) for s in cdr3_list), default=0)
     counts = pd.DataFrame(0, index=list(alphabet), columns=range(max_len))
@@ -204,25 +203,103 @@ def plot_fancy_logo(cdr3_list, title, filename):
     ax.set_title(title)
     ax.set_xlabel("CDR3 Position")
     plt.tight_layout()
-    plt.savefig(filename, dpi=300)
+    plt.savefig(os.path.join(output_folder, filename), dpi=300)
     plt.close()
 
 # ====================== 5. POSITION STATS + KL HEATMAP ======================
-def generate_position_specific_stats(df, score_col, cdr3_col="HCDR3", macs_col="Macs_count", facs1_col="FACS1_count"):
-    # (identical to v6.6 - full function with KL heatmap)
+def generate_position_specific_stats(df, score_col, output_folder, cdr3_col="HCDR3", macs_col="Macs_count", facs1_col="FACS1_count"):
+    os.makedirs(output_folder, exist_ok=True)
     print("📊 Computing Position-Specific Stats + KL Heatmap...")
-    # ... (paste the full generate_position_specific_stats from v6.6 here)
-    # (for brevity in this message it is the same as the previous complete version)
-    # It creates 11_..., 14_..., 15_..., 16_kl_divergence_contribution_heatmap.png
+    groups = {
+        'MACS_Baseline': df[df[macs_col] > 0][cdr3_col].dropna().astype(str).str.strip().tolist(),
+        'Training_Positive': df[(df[facs1_col] > 5) & (df['freq_facs1'] >= df['freq_macs'] * 1.5)][cdr3_col].dropna().astype(str).str.strip().tolist(),
+        'High_Score': df[df[score_col] > 0.8][cdr3_col].dropna().astype(str).str.strip().tolist()
+    }
+    max_len = max((max(len(s) for s in seqs) if seqs else 0) for seqs in groups.values())
+    stats_rows = []
+    entropy_data = {name: [] for name in groups}
+    kl_data, delta_data = [], []
+    kl_contrib_matrix = np.zeros((len(alphabet), max_len))
 
-# ====================== 6. TOP-N LV CLUSTER (OPTIONAL CDR3 LABELS) ======================
-def plot_top_n_cluster(df, score_col, cdr3_col="HCDR3", top_n=50, label_with_cdr3=True):
+    for pos in range(max_len):
+        row = {'IMGT_Position': pos + 105}
+        pos_probs = {}
+        for group_name, seqs in groups.items():
+            aa_count = {aa: 0 for aa in alphabet}
+            total = 0
+            for seq in seqs:
+                if pos < len(seq) and seq[pos] in alphabet:
+                    aa_count[seq[pos]] += 1
+                    total += 1
+            probs = np.array(list(aa_count.values())) / total if total > 0 else np.zeros(20)
+            pos_probs[group_name] = probs
+            probs_nz = probs[probs > 0]
+            entropy = -np.sum(probs_nz * np.log2(probs_nz)) if len(probs_nz) > 0 else 0
+            entropy_data[group_name].append(entropy)
+            row[f"{group_name}_Entropy"] = round(entropy, 3)
+            if total > 0:
+                top_idx = np.argmax(list(aa_count.values()))
+                row[f"{group_name}_Top_AA"] = f"{alphabet[top_idx]} ({max(aa_count.values())/total*100:.1f}%)"
+        if 'High_Score' in pos_probs and 'MACS_Baseline' in pos_probs:
+            p = pos_probs['High_Score']
+            q = pos_probs['MACS_Baseline']
+            q[q == 0] = 1e-10
+            p[p == 0] = 1e-10
+            kl = np.sum(p * np.log2(p / q))
+            kl_data.append(kl)
+            row['KL_Divergence_High_vs_MACS'] = round(kl, 3)
+            for i, aa in enumerate(alphabet):
+                contrib = p[i] * np.log2(p[i] / q[i]) if p[i] > 0 else 0
+                kl_contrib_matrix[i, pos] = contrib
+        delta = entropy_data['MACS_Baseline'][-1] - entropy_data['High_Score'][-1]
+        delta_data.append(delta)
+        row['Entropy_Delta_MACS_minus_High'] = round(delta, 3)
+        stats_rows.append(row)
+
+    stats_df = pd.DataFrame(stats_rows)
+    stats_df.to_csv(os.path.join(output_folder, "11_position_specific_stats.csv"), index=False)
+
+    # Entropy Delta Plot
+    positions = range(105, 105 + len(delta_data))
+    plt.figure(figsize=(14, 7))
+    plt.bar(positions, delta_data, color=['green' if d > 0 else 'red' for d in delta_data], alpha=0.8)
+    plt.axhline(0, color='black', linestyle='--')
+    plt.title("Entropy Delta: MACS → High-Score Rescued Clones")
+    plt.xlabel("IMGT Position")
+    plt.ylabel("Entropy Delta (bits)")
+    plt.savefig(os.path.join(output_folder, "14_entropy_delta_plot.png"), dpi=300)
+    plt.close()
+
+    # KL Line Plot
+    plt.figure(figsize=(14, 7))
+    plt.plot(positions, kl_data, color='purple', linewidth=3, marker='o')
+    plt.title("Relative Entropy (KL Divergence) High-Score vs MACS")
+    plt.xlabel("IMGT Position")
+    plt.ylabel("KL Divergence (bits)")
+    plt.savefig(os.path.join(output_folder, "15_kl_divergence_vs_macs.png"), dpi=300)
+    plt.close()
+
+    # KL Contribution Heatmap
+    plt.figure(figsize=(16, 10))
+    sns.heatmap(kl_contrib_matrix, annot=False, cmap="RdBu_r", center=0,
+                xticklabels=[f"{p}" for p in positions],
+                yticklabels=list(alphabet),
+                cbar_kws={'label': 'Contribution to KL divergence'})
+    plt.title("KL Divergence Heatmap\n(Blue = enriched in rescued clones | Red = depleted)")
+    plt.xlabel("IMGT Position (CDR3)")
+    plt.ylabel("Amino Acid")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_folder, "16_kl_divergence_contribution_heatmap.png"), dpi=300)
+    plt.close()
+
+# ====================== 6. TOP-N LV CLUSTER ======================
+def plot_top_n_cluster(df, score_col, output_folder, cdr3_col="HCDR3", top_n=50, label_with_cdr3=True):
     if top_n <= 1: return
+    os.makedirs(output_folder, exist_ok=True)
     top_df = df.nlargest(top_n, score_col).copy()
     cdr3_list = top_df[cdr3_col].dropna().astype(str).str.strip().tolist()
     scores = top_df[score_col].round(3).tolist()
     n = len(cdr3_list)
-    print(f"🔬 Building LV distance matrix for top {n} high-score CDR3s...")
 
     dist_matrix = np.zeros((n, n))
     for i in range(n):
@@ -234,16 +311,13 @@ def plot_top_n_cluster(df, score_col, cdr3_col="HCDR3", top_n=50, label_with_cdr
     plt.figure(figsize=(12, 10))
     sns.heatmap(dist_matrix, cmap="viridis", xticklabels=False, yticklabels=False)
     plt.title(f"Levenshtein Distance Heatmap — Top {n} High-Score CDR3s")
-    plt.savefig("evaluation_plots/17_lv_distance_heatmap_top50.png", dpi=300)
+    plt.savefig(os.path.join(output_folder, "17_lv_distance_heatmap_top50.png"), dpi=300)
     plt.close()
 
     # Dendrogram
     condensed = squareform(dist_matrix)
     Z = linkage(condensed, method='average')
-    if label_with_cdr3:
-        labels = [f"#{i+1:02d}: {s[:8]}...{s[-4:]} ({scores[i]})" for i, s in enumerate(cdr3_list)]
-    else:
-        labels = [f"#{i+1:02d}" for i in range(n)]
+    labels = [f"#{i+1:02d}: {s[:8]}...{s[-4:]} ({scores[i]})" if label_with_cdr3 else f"#{i+1:02d}" for i, s in enumerate(cdr3_list)]
 
     plt.figure(figsize=(18, 10))
     dendrogram(Z, labels=labels, leaf_rotation=90, leaf_font_size=9)
@@ -251,28 +325,45 @@ def plot_top_n_cluster(df, score_col, cdr3_col="HCDR3", top_n=50, label_with_cdr
     plt.xlabel("Clones")
     plt.ylabel("Levenshtein Distance")
     plt.tight_layout()
-    plt.savefig("evaluation_plots/18_lv_dendrogram_top50.png", dpi=300)
+    plt.savefig(os.path.join(output_folder, "18_lv_dendrogram_top50.png"), dpi=300)
     plt.close()
 
     # Mapping CSV
     mapping = pd.DataFrame({"Rank": range(1,n+1), "CDR3": cdr3_list, "ML_Score": scores})
-    mapping.to_csv("evaluation_plots/top50_cluster_mapping.csv", index=False)
-    print("✅ Top-50 LV plots saved (dendrogram labels =", "CDR3" if label_with_cdr3 else "simple rank", ")")
+    mapping.to_csv(os.path.join(output_folder, "top50_cluster_mapping.csv"), index=False)
 
 # ====================== 7. MAIN EVALUATION PLOTS ======================
-def generate_evaluation_plots(df, score_col, training_mode, model=None, X=None,
+def generate_evaluation_plots(df, score_col, training_mode, output_folder, model=None, X=None,
                               cdr3_col="HCDR3", macs_col="Macs_count", facs1_col="FACS1_count"):
-    os.makedirs("evaluation_plots", exist_ok=True)
-    # All previous plots (log-fold, logos, difference logo, position stats, KL heatmap)
-    # ... (full block from v6.6 - kept for completeness)
-    generate_position_specific_stats(df, score_col, cdr3_col, macs_col, facs1_col)
+    os.makedirs(output_folder, exist_ok=True)
+    # Log fold-change
+    df['log_fold_change'] = np.log10(df['fold_change'] + 1e-8)
+    plt.figure(figsize=(10,6))
+    sns.histplot(df[df['fold_change']>0]['log_fold_change'], bins=50, kde=True)
+    plt.axvline(np.log10(1.5), color='red', linestyle='--')
+    plt.title("Log10 Fold-Change Distribution")
+    plt.savefig(os.path.join(output_folder, "01_log_fold_change.png"))
+    plt.close()
 
+    # Fancy logos
+    all_cdr3s = df[cdr3_col].dropna().astype(str).tolist()
+    plot_fancy_logo(all_cdr3s, "ALL RAW CDR3s", "07_logo_all_raw.png", output_folder)
+    pos_cdr3s = df[(df[facs1_col]>5)&(df['freq_facs1']>=df['freq_macs']*1.5)][cdr3_col].dropna().astype(str).tolist()
+    plot_fancy_logo(pos_cdr3s, "Training Positives", "04_logo_train_positive.png", output_folder)
+    high_cdr3s = df[df[score_col]>0.8][cdr3_col].dropna().astype(str).tolist()
+    plot_fancy_logo(high_cdr3s, "High-Score Predicted", "05_logo_high_score.png", output_folder)
+
+    # Position stats + KL heatmap
+    generate_position_specific_stats(df, score_col, output_folder, cdr3_col, macs_col, facs1_col)
+
+    # Top-N LV cluster
     if PLOT_TOP_N_CLUSTER > 0:
-        plot_top_n_cluster(df, score_col, cdr3_col, PLOT_TOP_N_CLUSTER, LABEL_DENDROGRAM_WITH_CDR3)
+        plot_top_n_cluster(df, score_col, output_folder, cdr3_col, PLOT_TOP_N_CLUSTER, LABEL_DENDROGRAM_WITH_CDR3)
 
 # ====================== USER CONFIG ======================
 if __name__ == "__main__":
-    INPUT_FILE = "your_aggregated_leads_after_combine.csv"
+
+    INPUT_FILE = "/Users/Hoan.Nguyen/ComBio/NGS/Projects/AntibodyDiscovery/Miseq108/processed/mPTPRO_440-827_AH_Block198_clones.csv"
 
     USE_BLOSUM_IN_MODEL = False
     TRAINING_MODE = "binary_strong"
@@ -281,20 +372,35 @@ if __name__ == "__main__":
     DIVERSITY_METRIC = "levenshtein"
     MIN_LEVENSHTEIN_DIST = 5
 
-    PLOT_TOP_N_CLUSTER = 50                    # ← 0 to disable
-    LABEL_DENDROGRAM_WITH_CDR3 = True          # ← : OPTIONAL
+    PLOT_TOP_N_CLUSTER = 50
+    LABEL_DENDROGRAM_WITH_CDR3 = True
 
-    PREVIOUS_FILES = ["previous_synthesized.csv"]
-    PREVIOUS_CDR3_COLUMN = "HCDR3"
+    # ================== CUSTOM OUTPUT FOLDER ==================
+    OUTPUT_FOLDER = "/Users/Hoan.Nguyen/ComBio/NGS/Projects/AntibodyDiscovery/Miseq108"          
+    # ========================================================
+
+    PREVIOUS_FILES = ["/Users/Hoan.Nguyen/ComBio/AntigenDB/datasources/ipi_data/processed/ipi_antibodydb_july2025.csv"]
+    PREVIOUS_CDR3_COLUMN = "CDR3"
+    facs_col = 'count mPTPRO_440-827_AH__Block198__Round5__F_P__4nM_Block198.csv'
+    macs_col = 'count mPTPRO_440-827_AH__Block198__Round3__M_P__100nM_Block198.csv'
 
     # ====================== RUN ======================
+    #df = pd.read_csv(INPUT_FILE)
+    #df, model, X = add_kmer_logreg_score(df, use_blosum_features=USE_BLOSUM_IN_MODEL, training_mode=TRAINING_MODE)
+    #previous_list = load_previous_cdr3s(PREVIOUS_FILES, PREVIOUS_CDR3_COLUMN)
+    #df = select_diverse_leads(df, previous_cdr3s=previous_list, score_col=df.columns[-1], diversity_metric=DIVERSITY_METRIC)
+    #generate_evaluation_plots(df, df.columns[-2], TRAINING_MODE, OUTPUT_FOLDER, model=model, X=X)
+
     df = pd.read_csv(INPUT_FILE)
-    df, model, X = add_kmer_logreg_score(df, use_blosum_features=USE_BLOSUM_IN_MODEL, training_mode=TRAINING_MODE)
+    df, model, X = add_kmer_logreg_score(df, use_blosum_features=USE_BLOSUM_IN_MODEL, training_mode=TRAINING_MODE,cdr3_col='cdr3_aa',macs_col='count mPTPRO_440-827_AH__Block198__Round3__M_P__100nM_Block198.csv',facs1_col=facs_col)
     previous_list = load_previous_cdr3s(PREVIOUS_FILES, PREVIOUS_CDR3_COLUMN)
-    df = select_diverse_leads(df, previous_cdr3s=previous_list, score_col=df.columns[-1], diversity_metric=DIVERSITY_METRIC)
-    generate_evaluation_plots(df, df.columns[-2], TRAINING_MODE, model=model, X=X)
+    df = select_diverse_leads(df, previous_cdr3s=previous_list, score_col=df.columns[-1], diversity_metric=DIVERSITY_METRIC,cdr3_col='cdr3_aa',count_col=facs_col, min_levenshtein_dist=MIN_LEVENSHTEIN_DIST)
+    generate_evaluation_plots(df, df.columns[-2], TRAINING_MODE,OUTPUT_FOLDER, model=model, X=X,cdr3_col='cdr3_aa', macs_col=macs_col, facs1_col=facs_col)
 
-    df.to_csv("leads_with_ml_score_and_selection.csv", index=False)
-    df[df["selected_for_synthesis"]].to_csv("final_clones_for_synthesis.csv", index=False)
 
-    print("🎉 v6.8 COMPLETE! Thank you for the journey!")
+
+    # Final CSVs
+    df.to_csv(os.path.join(OUTPUT_FOLDER, "leads_with_ml_score_and_selection.csv"), index=False)
+    df[df["selected_for_synthesis"]].to_csv(os.path.join(OUTPUT_FOLDER, "final_clones_for_synthesis.csv"), index=False)
+
+    print(f"🎉 v6.9 COMPLETE! All results saved in: {OUTPUT_FOLDER}")
