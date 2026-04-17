@@ -251,9 +251,11 @@ def find_optimal_threshold(
 def threshold_report(
     y_true:    np.ndarray,
     y_proba:   np.ndarray,
-    target:    str  = 'psr_filter',
-    lm:        str  = 'ablang',
-    output_dir: str = None,
+    target:    str   = 'psr_filter',
+    lm:        str   = 'ablang',
+    model:     str   = '',
+    db_stem:   str   = '',
+    output_dir: str  = None,
     cost_fp:   float = 1.0,
     cost_fn:   float = 3.0,
     show_plot: bool  = True,
@@ -473,7 +475,9 @@ def threshold_report(
         color='#e2e8f0', fontsize=10, fontweight='bold', y=0.99,
     )
 
-    stem = f"thresh_report_{target}_{lm}"
+    _model_tag = f"_{model}" if model else ""
+    _db_tag    = f"_{db_stem}" if db_stem else ""
+    stem = f"thresh_report_{target}_{lm}{_model_tag}{_db_tag}"
     plt.savefig(os.path.join(output_dir, f"{stem}.png"),
                 dpi=150, bbox_inches='tight',
                 facecolor=fig.get_facecolor())
@@ -513,13 +517,6 @@ def threshold_report(
               f"{row['sensitivity']:>6.3f}  {row['specificity']:>6.3f}  "
               f"{row['precision']:>6.3f}  {row['f1']:>6.3f}  {row['f2']:>6.3f}")
     print(f"{'─'*72}")
-    print(f"\n  Recommendation for your datasets:")
-    print(f"    IPI PSR  (~52/48%)  → use  youden  "
-          f"t={df.loc['youden','threshold']:.3f}"  if 'youden' in df.index else "")
-    print(f"    IPI SEC  (~79/21%)  → use  f2      "
-          f"t={df.loc['f2','threshold']:.3f}"       if 'f2'     in df.index else "")
-    print(f"    DS1      (~53/47%)  → use  f1      "
-          f"t={df.loc['f1','threshold']:.3f}"       if 'f1'     in df.index else "")
     print(f"\n  Saved:")
     print(f"    {stem}.png")
     print(f"    {stem}_sweep.csv")
@@ -539,6 +536,8 @@ def threshold_stability_from_folds(
     method:    str   = 'auto',
     target:    str   = 'psr_filter',
     lm:        str   = 'ablang',
+    model:     str   = '',
+    db_stem:   str   = '',
     output_dir: str  = None,
     cost_fp:   float = 1.0,
     cost_fn:   float = 3.0,
@@ -679,7 +678,11 @@ def threshold_stability_from_folds(
     )
     plt.tight_layout()
     stab_path = os.path.join(
-        output_dir, f"thresh_stability_{target}_{lm}_{method}.png"
+        output_dir,
+        f"thresh_stability_{target}_{lm}"
+        + (f"_{model}" if model else "")
+        + (f"_{db_stem}" if db_stem else "")
+        + f"_{method}.png"
     )
     plt.savefig(stab_path, dpi=150, bbox_inches='tight',
                 facecolor=fig.get_facecolor())
@@ -720,16 +723,35 @@ def embed_threshold_in_checkpoint(
             method    = 'auto',
         )
     """
-    import torch
-    payload = torch.load(checkpoint_path, map_location='cpu',
-                         weights_only=False)
-    if not isinstance(payload, dict):
-        raise ValueError(
-            "Only new-style checkpoints (dict with 'state_dict') are supported."
-        )
-    payload['recommended_threshold'] = threshold
-    payload['threshold_method']      = method
-    torch.save(payload, checkpoint_path)
+    ext = os.path.splitext(checkpoint_path)[1].lower()
+
+    if ext == '.pkl':
+        # XGBoost / RandomForest checkpoint — use joblib
+        import joblib
+        payload = joblib.load(checkpoint_path)
+        if not isinstance(payload, dict):
+            payload = {'model': payload}
+        payload['recommended_threshold'] = threshold
+        payload['threshold_method']      = method
+        joblib.dump(payload, checkpoint_path)
+
+    else:
+        # Transformer / CNN checkpoint — use torch
+        import torch
+        try:
+            payload = torch.load(checkpoint_path, map_location='cpu',
+                                 weights_only=False)
+        except Exception as _e:
+            print(f"[embed_threshold] WARNING: could not load {checkpoint_path}: {_e}")
+            return
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "Only new-style checkpoints (dict with 'state_dict') are supported."
+            )
+        payload['recommended_threshold'] = threshold
+        payload['threshold_method']      = method
+        torch.save(payload, checkpoint_path)
+
     print(f"[embed_threshold] {checkpoint_path}")
     print(f"  recommended_threshold = {threshold:.4f}  (method={method})")
 
@@ -742,6 +764,8 @@ def run_full_threshold_pipeline(
     fold_preds_csv:  str,
     target:          str   = 'psr_filter',
     lm:              str   = 'ablang',
+    model:           str   = '',
+    db_stem:         str   = '',
     best_ckpt_path:  str   = None,
     output_dir:      str   = None,
     cost_fp:         float = 1.0,
@@ -771,6 +795,7 @@ def run_full_threshold_pipeline(
         df_preds['true'].values,
         df_preds['prob'].values,
         target=target, lm=lm,
+        model=model, db_stem=db_stem,
         output_dir=output_dir,
         cost_fp=cost_fp, cost_fn=cost_fn,
     )
@@ -779,6 +804,7 @@ def run_full_threshold_pipeline(
     stability = threshold_stability_from_folds(
         fold_preds_csv, method='auto',
         target=target, lm=lm,
+        model=model, db_stem=db_stem,
         output_dir=output_dir,
         cost_fp=cost_fp, cost_fn=cost_fn,
     )
