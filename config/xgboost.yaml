@@ -1,0 +1,298 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# xgboost.yaml — XGBoostModel configuration
+# MLAbDev · IPI Antibody Developability Prediction Platform
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# XGBoost-specific differences vs random_forest.yaml:
+#   colsample_bytree  instead of  max_features
+#   scale_pos_weight  instead of  class_weight='balanced'  (auto-computed)
+#   early_stopping_rounds         self-limits n_estimators if val set provided
+#   no oob_score                  use val AUC instead
+#   use_random_search             RandomizedSearchCV (default: false)
+#
+# ── Mode ──────────────────────────────────────────────────────────────────────
+mode: manual          # 'auto' | 'manual'
+                      # auto   → derives params from data (n, pos_rate, n_features)
+                      # manual → uses values below exactly
+
+task: classification          # 'classification' | 'regression' | 'auto' (detect from y)
+                      # classification → predict PASS/FAIL label
+                      # regression     → predict continuous score (e.g. psr_norm_mean)
+
+# ── Feature modes — set automatically by --lm flag ───────────────────────────
+# You do NOT need to edit this section.
+# The --lm flag controls everything at runtime:
+#
+#   --lm biophysical     → biophysical features (charge, pI, AA counts ...)
+#   --lm kmer            → k-mer frequencies   (see kmer section below)
+#   --lm onehot          → one-hot VH+VL
+#   --lm onehot_vh       → one-hot VH only
+#   --lm onehot_cdr3     → one-hot HCDR3 only
+#   --lm ablang          → ABlang2 embedding (480-dim PLM)
+#   --lm antiberta2      → AntiBERTa2 (1024-dim PLM)
+#   --lm antiberta2-cssp → AntiBERTa2-CSSP
+#   --lm antiberty       → AntiBERTy
+#   --lm igbert          → IgBERT
+#
+features:
+  embedding:   false   # auto-set true for any PLM --lm
+  kmer:        false   # auto-set true for --lm kmer
+  biophysical: false   # auto-set true for --lm biophysical
+  onehot:      false   # auto-set true for --lm onehot*
+
+# ── k-mer settings ────────────────────────────────────────────────────────────
+kmer:
+  k: [1, 2,3]           # k values — [1,2] recommended (3-mers too sparse for <10k)
+  sequence: both      # 'CDR3' | 'VH' | 'both'
+  normalize: true     # normalise counts to frequencies
+
+# ── One-hot encoding ──────────────────────────────────────────────────────────
+onehot:
+  sequence: HCDR3     # default — auto-overridden by --lm flag
+  max_lengths:
+    vh:    0          # 0 = auto-fit from training data
+    vl:    0          # 0 = auto-fit from training data
+    hcdr3: 0          # 0 = auto-fit from training data
+
+# ── Biophysical features ──────────────────────────────────────────────────────
+biophysical:
+  sequence: CDR3
+  features:
+    # CDR3 properties
+    - length
+    - pi
+    - charge_ph7
+    - hydrophobicity
+    - aromaticity
+    - instability
+    - frac_charged
+    - frac_hydrophobic
+    # CDR3 amino acid counts
+    - count_D
+    - count_E
+    - count_R
+    - count_K
+    - count_H
+    - count_W
+    - count_Y
+    - count_F
+    - count_G
+    - count_P
+    - count_C
+    # VH-level features
+    - vh_length
+    - vh_cdr3_length_ratio
+    - vh_charge
+    - vh_hydrophobicity
+
+# ── Model hyperparameters ─────────────────────────────────────────────────────
+# DEFAULT = original IPI parameters (validated on ipi_psr_trainset, n=11,265)
+# These are the BASE parameters — overridden by lm_profiles below if matched.
+#
+# Key differences vs RandomForest:
+#   n_estimators:    3000  (RF uses 1000 — XGBoost additive trees need more)
+#   max_depth:          6  (RF uses 15  — XGBoost shallow trees = better generalisation)
+#   learning_rate:   0.01  (RF has no lr — XGBoost shrinks each tree contribution)
+#   colsample_bytree:0.8   (RF uses max_features=0.3 — same purpose, different API)
+#   gamma:           0.0   (min loss reduction to split — 0 = no constraint like RF)
+#   min_child_weight:  1   (min sum of instance weights per leaf)
+#   reg_alpha:       0.0   (L1 regularisation on leaf weights)
+#   reg_lambda:      1.0   (L2 regularisation — XGBoost default)
+model:
+  n_estimators:       3000   # number of boosting rounds
+                             # with early_stopping_rounds=50, self-limits
+  max_depth:             6   # max tree depth — shallow additive trees
+                             # XGBoost paper recommends 3–8 for tabular data
+  learning_rate:      0.01   # shrinkage — lower = more trees needed but better
+  subsample:           0.8   # row subsampling per tree (0.6–1.0)
+  colsample_bytree:    0.8   # feature fraction per tree (analogous to max_features)
+                             # overridden per LM by lm_profiles below
+  gamma:               0.0   # min loss reduction to split a node
+                             # 0 = no constraint (most permissive)
+                             # 0.1–0.5 = slight pruning for noisy labels
+  min_child_weight:      1   # min sum of instance weights per leaf
+                             # higher = more conservative (anti-overfit)
+  reg_alpha:           0.0   # L1 regularisation on leaf weights (sparsity)
+  reg_lambda:          1.0   # L2 regularisation — XGBoost default, keep at 1.0
+  tree_method:        hist   # 'hist' = fastest for n~10k (histogram-based)
+                             # 'approx' for very large datasets
+                             # 'gpu_hist' if GPU available
+  n_jobs:               -1   # -1 = use all available cores
+  random_state:         42
+
+# ── Training ──────────────────────────────────────────────────────────────────
+training:
+  class_weight:      balanced   # 'balanced' → auto scale_pos_weight from class counts
+                                # null        → scale_pos_weight=1.0 (no reweighting)
+
+  # Early stopping — stops training when val AUC stops improving
+  # Requires val set (--split 0.8 or --val file.xlsx) — NOT available in kfold
+  # Set to 0 to disable (default — mirrors RF behaviour, use kfold for selection)
+  # Set to 50 to enable when using --split 0.8 for iterative development
+  early_stopping_rounds: 0      # 0 = disabled (default, same behaviour as RF)
+                                 # 50 = enable when --split 0.8 used for training
+
+  eval_metric:        auc       # 'auc' | 'logloss' | 'error' | 'rmse' (regression)
+
+  # Hyperparameter search — false by default (use manual params above)
+  # Set to true for first-time tuning on a new dataset.
+  # Workflow: run once with use_random_search=true → note best params →
+  #           paste into model section above → set back to false
+  use_random_search: true
+  n_iter:              30       # RandomizedSearchCV iterations (used if above=true)
+  cv:                   5       # inner CV folds for RandomizedSearchCV
+
+  # Original IPI RandomizedSearchCV distributions (used when use_random_search=true)
+  # These are the SAME distributions as the original xgboost.py — validated on IPI.
+  # search_space:
+  #   n_estimators:     [3000, 6000]    randint
+  #   max_depth:        [4, 12]         randint
+  #   learning_rate:    [0.005, 0.095]  uniform
+  #   subsample:        [0.6, 1.0]      uniform
+  #   colsample_bytree: [0.6, 1.0]      uniform
+  #   gamma:            [0.0, 0.5]      uniform
+  #   min_child_weight: [1, 10]         randint
+  #   reg_alpha:        [0.0, 1.0]      uniform
+  #   reg_lambda:       [0.1, 2.0]      uniform
+
+# ── LM-specific hyperparameter profiles ───────────────────────────────────────
+# The --lm flag selects the profile automatically.
+# Each profile overrides only the keys it specifies — rest inherit from model above.
+#
+# Rationale (colsample_bytree):
+#   biophysical  ( ~26d):  0.8   → use most features (low-dim, dense)
+#   kmer        (~440d):   0.5   → feature selection pressure (mid-dim sparse)
+#   onehot HCDR3(~300d):   0.3   → strong regularisation (sparse binary)
+#   PLM          (480d):   0.25  → strong regularisation (dense correlated)
+#   PLM         (1024d):   0.20  → strongest regularisation (very high-dim)
+#
+# Note: these profiles are applied ON TOP of the manual model params above.
+lm_profiles:
+  biophysical:
+    colsample_bytree: 0.8    # low-dim: use most features
+    max_depth: 6
+    min_child_weight: 1
+
+  kmer:
+    colsample_bytree: 0.5    # mid-dim: moderate feature selection
+    max_depth: 6
+    min_child_weight: 3
+
+  onehot:                    # VHVL one-hot (~4900d, very sparse binary)
+    colsample_bytree: 0.3
+    max_depth: 8
+    min_child_weight: 5
+
+  onehot_vh:                 # VH one-hot (~2600d)
+    colsample_bytree: 0.3
+    max_depth: 8
+    min_child_weight: 5
+
+  onehot_hcdr3:              # HCDR3 one-hot (~300–500d)
+    colsample_bytree: 0.5
+    max_depth: 6
+    min_child_weight: 3
+
+  onehot_cdr3:               # alias for onehot_hcdr3
+    colsample_bytree: 0.5
+    max_depth: 6
+    min_child_weight: 3
+
+  ablang:                    # 480-dim PLM embedding
+    colsample_bytree: 0.25   # 0.25×480 = 120 features/tree
+    max_depth: 6
+    min_child_weight: 3
+
+  antiberty:                 # 512-dim PLM embedding
+    colsample_bytree: 0.25   # 0.25×512 = 128 features/tree
+    max_depth: 6
+    min_child_weight: 3
+
+  antiberta2:                # 1024-dim PLM embedding
+    colsample_bytree: 0.20   # 0.20×1024 = 204 features/tree
+    max_depth: 5
+    min_child_weight: 5
+
+  antiberta2-cssp:           # 1024-dim PLM embedding
+    colsample_bytree: 0.20
+    max_depth: 5
+    min_child_weight: 5
+
+  igbert:                    # 1024-dim PLM embedding
+    colsample_bytree: 0.20   # 0.20×1024 = 204 features/tree
+    max_depth: 5
+    min_child_weight: 5
+
+# ── SHAP interpretability ─────────────────────────────────────────────────────
+# XGBoost uses shap.TreeExplainer — same API as RandomForest.
+# Runs automatically after train() on train + val sets.
+shap:
+  enabled:      true
+
+  # General
+  top_features:   30          # top features in bar / beeswarm / heatmap
+  max_samples:   500          # subsample for SHAP speed (TreeExplainer O(n×features))
+  plot_dpi:      150          # DPI for PNG outputs (bar, beeswarm, heatmap)
+  pub_dpi:       300          # DPI for waterfall TIFF — use 300 for Nature/PPT
+
+  # Plot types
+  plot_types:
+    - bar
+    - beeswarm                # always on
+    - heatmap
+
+  # Waterfall plots + PPT
+  max_waterfall_samples:  50  # max antibodies to plot (0 = skip waterfall)
+  waterfall_top_n:        20  # features shown per waterfall (≤ 20 recommended)
+  waterfall_fig_size: [8, 6]  # [width, height] inches
+  waterfall_fmt:        tiff  # 'tiff' | 'jpeg' | 'png'
+  make_ppt:             true  # assemble into .pptx (pip install python-pptx)
+
+# ── CDR3 mutagenesis ──────────────────────────────────────────────────────────
+# In-silico CDR3 scanning — mutate each position to all 20 AAs,
+# score change = (mutant_prob - wildtype_prob)
+# Used with: --predict --mutagenesis N
+mutagenesis:
+  max_samples:  50            # max antibodies to scan (0 = all)
+  pub_dpi:     300
+  format:      tiff           # 'tiff' | 'jpeg' | 'png'
+  make_ppt:    true           # assemble heatmaps into .pptx
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PARAMETER TUNING GUIDE
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Step 1 — Run RandomizedSearchCV ONCE to find best params for your dataset:
+#   python predict_developability.py --kfold 10 \
+#       --target psr_filter --lm biophysical --model xgboost \
+#       --db data/ipi_psr_trainset.xlsx
+#   With:  training.use_random_search: true
+#
+# Step 2 — Note the best params from the log file:
+#   [train] best CV AUC = 0.8234
+#   XGBClassifier(n_estimators=4200, max_depth=7, learning_rate=0.018, ...)
+#
+# Step 3 — Paste into model section above and set use_random_search: false
+#   model:
+#     n_estimators: 4200
+#     max_depth: 7
+#     learning_rate: 0.018
+#
+# Step 4 — All future runs use these fixed params (fast, reproducible)
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPARISON WITH RANDOM FOREST DEFAULTS (random_forest.yaml)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+#   Parameter            RF            XGBoost      Notes
+#   ─────────────────────────────────────────────────────────────────────────
+#   n_estimators         1000          3000         XGB additive needs more trees
+#   max_depth            15            6            XGB shallow wins (bias-var tradeoff)
+#   feature_fraction     max_features  colsample    same concept, different API
+#   class imbalance      class_weight  scale_pos_w  auto-computed from label counts
+#   learning_rate        n/a           0.01         XGB-specific shrinkage
+#   regularisation       min_samples   gamma+reg    XGB has L1+L2 natively
+#   internal validation  oob_score     early_stop   different mechanism, same purpose
+#   SHAP                 TreeExplainer TreeExplainer identical API
+#
+# ══════════════════════════════════════════════════════════════════════════════

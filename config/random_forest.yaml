@@ -1,0 +1,266 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# random_forest.yaml — RandomForestModel configuration
+# MLAbDev · IPI Antibody Developability Prediction Platform
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Mode ──────────────────────────────────────────────────────────────────────
+mode: manual          # 'auto' | 'manual'
+                      # auto   → derives all model/training params from data
+                      # manual → uses values below exactly
+                      # IPI Data: manual mode
+
+
+task: classification  # 'classification' | 'regression'
+                      # classification → predict PASS/FAIL label
+                      # regression     → predict continuous score (e.g. psr_norm_mean, kd/ka_score)
+
+# ── Feature modes — set automatically by --lm flag ───────────────────────────
+# You do NOT need to edit this section.
+# The --lm flag controls everything at runtime:
+#
+#   --lm biophysical     → biophysical features (charge, pI, AA counts ...)
+#   --lm kmer            → k-mer frequencies   (see kmer section below)
+#   --lm onehot          → one-hot VH+VL        (see onehot section below)
+#   --lm onehot_vh       → one-hot VH only
+#   --lm onehot_cdr3     → one-hot HCDR3 only
+#   --lm ablang          → AblangEmbedding (480-dim PLM)
+#   --lm antiberta2      → AntiBERTa2 (1024-dim PLM)
+#   --lm antiberta2-cssp → AntiBERTa2-CSSP
+#   --lm antiberty       → AntiBERTy
+#   --lm igbert          → IgBERT
+#
+# The block below is kept only for edge cases — do not edit in normal use.
+features:
+  embedding:   false   # auto-set true for any PLM --lm
+  kmer:        false   # auto-set true for --lm kmer
+  biophysical: false   # auto-set true for --lm biophysical
+  onehot:      false   # auto-set true for --lm onehot*
+
+# ── k-mer settings (used when features.kmer=true) ────────────────────────────
+kmer:
+  k: [1, 2,3]           # k values — [1,2] recommended (3-mers too sparse for <10k)
+  sequence: VH      # 'CDR3' | 'VH' | 'both'
+  normalize: true     # normalise counts to frequencies (sum to 1 per sequence)
+
+# ── One-hot encoding (used when features.onehot=true) ─────────────────────────
+# Encodes sequence positions directly as binary features.
+# SHAP on one-hot shows which position × amino acid drives the prediction.
+# Feature names: oh_hcdr3_1_A, oh_hcdr3_1_C, ..., oh_hcdr3_25_Y
+onehot:
+  sequence: VHVL     # 'HCDR3' | 'VH' | 'VHVL'  — overridden by --lm flag
+
+  # Max sequence lengths — HOW THIS WORKS:
+  #   At --train  : max length is fitted from actual training data
+  #                 (e.g. longest VH = 131 → uses 131, not 135)
+  #                 The fitted value is saved inside the .pkl model.
+  #   At --predict: the saved training max is used automatically.
+  #                 Sequences LONGER than training max are truncated
+  #                 with a WARNING printed to the log.
+  #
+  #   max_lengths act as a HARD CAP (ceiling).
+  #   Set to 0 to disable the cap and always use the data-fitted value.
+  #   Set to a specific value to enforce a consistent feature dimension
+  #   across multiple datasets (e.g. cross-study comparison).
+  #
+  #   Recommended: leave at 0 (auto) for most use cases.
+  #   Set explicitly only if you know your sequences are capped at a fixed length.
+  max_lengths:
+    vh:    0          # 0 = auto-fit from training data  (e.g. will use 131)
+    vl:    0          # 0 = auto-fit from training data  (e.g. will use 114)
+    hcdr3: 0          # 0 = auto-fit from training data  (e.g. will use 25)
+  # Examples for explicit caps:
+  #   vh:    135      # IMGT-numbered VH is always ≤ 135
+  #   vl:    135      # IMGT-numbered VL is always ≤ 135
+  #   hcdr3:  30      # allow up to 30-residue CDR3
+
+# ── CDR3 mutagenesis (used with --predict --mutagenesis) ──────────────────────
+# Works with all models: rf | xgboost | transformer_onehot | transformer_lm | cnn
+# Output folder: {input_stem}_{target}_{lm}_{model}_{db}_mutagenesis/
+#   (same naming as SHAP waterfall folder, suffix _mutagenesis instead of _waterfalls)
+mutagenesis:
+  max_samples: 50       # max antibodies to scan (0 = all)
+                        # each antibody = n_CDR3_pos × 20 model calls
+  pub_dpi:     300      # image DPI (300 for Nature / PPT)
+  format:      tiff     # 'tiff' | 'jpeg' | 'png'
+  make_ppt:    true     # assemble all heatmaps into a .pptx
+
+# ── Biophysical features (used when features.biophysical=true) ────────────────
+# Naming convention (handled automatically by _rename()):
+#   YAML key            →  SHAP feature name
+#   ───────────────────────────────────────────────────────
+#   length              →  cdr3_length
+#   charge_ph7          →  cdr3_charge      (removes _ph7 suffix)
+#   count_R             →  cdr3_R           (removes count_ prefix)
+#   vh_length           →  vh_length        (vh_ prefix kept as-is)
+#   vh_charge           →  vh_charge
+biophysical:
+  sequence: CDR3
+  features:
+    # ── CDR3 properties ───────────────────────────────────────────────────────
+    - length            # CDR3 length (AA count)                 → cdr3_length
+    - pi                # isoelectric point                       → cdr3_pi
+    - charge_ph7        # net charge at pH 7                      → cdr3_charge
+    - hydrophobicity    # GRAVY hydrophobicity score              → cdr3_hydrophobicity
+    - aromaticity       # fraction aromatic residues (F+Y+W)      → cdr3_aromaticity
+    - instability       # instability index                       → cdr3_instability
+    - frac_charged      # fraction charged (D+E+R+K+H)            → cdr3_frac_charged
+    - frac_hydrophobic  # fraction hydrophobic (A+V+I+L+M+F+W+P)  → cdr3_frac_hydrophobic
+
+    # ── CDR3 single amino acid counts ─────────────────────────────────────────
+    # Anionic — protective against polyreactivity
+    - count_D           # Asp                                     → cdr3_D
+    - count_E           # Glu                                     → cdr3_E
+    # Cationic — polyreactivity drivers
+    - count_R           # Arg  (strongest PSR driver)             → cdr3_R
+    - count_K           # Lys                                     → cdr3_K
+    - count_H           # His  (positive at pH 7)                 → cdr3_H
+    # Aromatic — hydrophobic patches
+    - count_W           # Trp  (strongest aromatic driver)        → cdr3_W
+    - count_Y           # Tyr                                     → cdr3_Y
+    - count_F           # Phe                                     → cdr3_F
+    # Structural
+    - count_G           # Gly  (flexibility)                      → cdr3_G
+    - count_P           # Pro  (rigidity)                         → cdr3_P
+    - count_C           # Cys  (disulfide)                        → cdr3_C
+
+    # ── VH-level features ─────────────────────────────────────────────────────
+    - vh_length             # full VH sequence length             → vh_length
+    - vh_cdr3_length_ratio  # len(VH) / len(CDR3)                → vh_cdr3_length_ratio
+    - vh_charge             # VH net charge at pH 7               → vh_charge
+    - vh_hydrophobicity     # VH GRAVY hydrophobicity score       → vh_hydrophobicity
+
+# ── One-hot encoding ─────────────────────────────────────────────────────────
+# --lm flag → sequence input → output filename
+#
+#   --lm onehot
+#     RF:                  VHVL one-hot (VH + VL concatenated)
+#     transformer_onehot:  VH+VL (branch-1) + CDR3 (branch-2)  ← UNCHANGED
+#     → FINAL_{target}_onehot_{model}_{db}
+#
+#   --lm onehot_vh
+#     RF:                  VH only one-hot
+#     transformer_onehot:  VH (branch-1) + CDR3 (branch-2)     ← UNCHANGED
+#     → FINAL_{target}_onehot_vh_{model}_{db}
+#
+#   --lm onehot_cdr3  (alias: onehot_hcdr3, both accepted)
+#     RF only:             HCDR3 one-hot
+#     transformer_onehot:  NOT applicable — CDR3 is always branch-2
+#     → FINAL_{target}_onehot_hcdr3_{model}_{db}
+#
+# NOTE: transformer_onehot.py is UNCHANGED. Its dual-branch architecture
+#       always uses CDR3 as branch-2. The --lm flag only switches branch-1.
+#
+onehot:
+  sequence: HCDR3     # RF default — auto-overridden by --lm flag:
+                      # --lm onehot      → VHVL
+                      # --lm onehot_vh   → VH
+                      # --lm onehot_cdr3 → HCDR3
+  # Max lengths auto-fitted from training data — no need to set manually
+
+# ── Model hyperparameters ─────────────────────────────────────────────────────
+# These are the BASE parameters — overridden by lm_profiles below if matched.
+model:
+  n_estimators:      1000  # number of trees
+  max_depth:           15  # max tree depth (None = unlimited)
+  min_samples_leaf:     5  # min samples per leaf — regularisation
+  min_samples_split:   10  # min samples to split a node
+  max_features:        0.3 # fraction of features per split
+  criterion:        entropy       # classification: 'entropy' | 'gini'
+                                  # regression:     'squared_error' | 'absolute_error'
+  bootstrap:          true
+  oob_score:          true        # free internal validation (no extra data needed)
+  n_jobs:               -1        # -1 = use all cores
+  random_state:         42
+
+# ── LM-specific hyperparameter profiles ───────────────────────────────────────
+# The --lm flag selects the profile automatically.
+# Each profile overrides only the keys it specifies — rest inherit from model above.
+#
+# Rationale:
+#   PLM embedding  (512d / 1024d):  max_features=0.25 → ~128-256 splits (good diversity)
+#   biophysical    (~26d):          max_features=sqrt → ~5 splits (avoids tree correlation)
+#   kmer [1,2]     (~440d):         max_features=0.25 → ~110 splits (good)
+#   onehot HCDR3   (~300-500d):     max_features=sqrt → ~17-22 splits (sparse binary)
+#   onehot VH/VHVL (~2600-4900d):   max_features=sqrt → ~50-70 splits (very sparse)
+#
+lm_profiles:
+  biophysical:
+    max_features:     sqrt   # sqrt(26) ≈ 5  — best for low-dim dense features
+    min_samples_leaf:    3   # fewer samples needed per leaf (low-dim, easy splits)
+    max_depth:          20   # allow slightly deeper trees for non-linear interactions
+
+  kmer:
+    max_features:     0.25   # 0.25×440 ≈ 110 — good diversity for mid-dim sparse
+    min_samples_leaf:    5
+    max_depth:          15
+
+  onehot:                    # VHVL one-hot (~4900d, very sparse binary)
+    max_features:     sqrt   # sqrt(4900) ≈ 70 — fast + diverse splits
+    min_samples_leaf:   10   # more regularisation for very high-dim
+    max_depth:          20
+    n_estimators:      500   # 500 is enough for high-dim binary features
+
+  onehot_vh:                 # VH one-hot (~2600d, sparse binary)
+    max_features:     sqrt   # sqrt(2600) ≈ 51
+    min_samples_leaf:   10
+    max_depth:          20
+    n_estimators:      500
+
+  onehot_hcdr3:              # HCDR3 one-hot (~300-500d, sparse binary)
+    max_features:     sqrt   # sqrt(400) ≈ 20
+    min_samples_leaf:    5
+    max_depth:          15
+
+  # PLM embedding modes — use 1/4 of embedding dimensions per split.
+  # Rationale: PLM dims are dense + correlated latent features.
+  #   sqrt(512)=22  → too few, misses multi-dim latent interactions
+  #   1/2   (256)   → too many, trees too similar (low diversity)
+  #   1/4   (128)   → sweet spot: captures interactions, keeps trees diverse
+  # Reference: empirical standard for dense high-dim embeddings (Breiman 2001 extension)
+  ablang:                    # 480-dim PLM → 0.25×480 = 120 features/split
+    max_features: 0.25
+  antiberty:                 # 512-dim PLM → 0.25×512 = 128 features/split
+    max_features: 0.25
+  antiberta2:                # 1024-dim PLM → 0.25×1024 = 256 features/split
+    max_features: 0.25
+  antiberta2-cssp:           # 1024-dim PLM → 0.25×1024 = 256 features/split
+    max_features: 0.25
+  igbert:                    # 1024-dim PLM → 0.25×1024 = 256 features/split
+    max_features: 0.25
+
+# ── Training ──────────────────────────────────────────────────────────────────
+training:
+  class_weight:      balanced     # 'balanced' | null  (classification only)
+  hyperparam_search: true        # true → RandomizedSearchCV (slow but optimal)
+
+# ── SHAP interpretability ─────────────────────────────────────────────────────
+# Runs automatically after train() on train + val sets.
+# Skipped for embedding-only mode (PLM dims are not interpretable).
+shap:
+  enabled:      true
+
+  # ── General ────────────────────────────────────────────────────────────────
+  top_features:   30    # top features in bar / beeswarm / heatmap
+  max_samples:   500    # subsample for SHAP speed (TreeExplainer O(n²))
+  plot_dpi:      150    # DPI for PNG outputs (bar, beeswarm, heatmap)
+  pub_dpi:       300    # DPI for waterfall PDF — use 300 for Nature/PPT
+
+  # ── Plot types — beeswarm is ALWAYS generated regardless of this list ───────
+  plot_types:
+    - bar
+    - beeswarm          # always on — listed here for completeness
+    - heatmap
+
+  # ── Waterfall images + PPT ──────────────────────────────────────────────────
+  # Each antibody → individual image in {prefix}_waterfalls/ folder
+  # All images → assembled into one PPT file (one slide per antibody)
+  max_waterfall_samples:  50     # max antibodies to plot (0 = skip waterfall)
+  waterfall_top_features: 20     # features shown per waterfall (≤ 20 recommended)
+  waterfall_fig_size: [8, 6]     # [width, height] in inches — NOT scaled dynamically
+                                 # 8×6  → fits PPT slide, Nature double-col
+                                 # 6×4  → compact, Nature single-col
+  waterfall_format: tiff         # 'tiff' → lossless, best for paper
+                                 # 'jpeg' → smaller, fine for PPT/screen
+                                 # 'png'  → lossless, web
+  waterfall_ppt:    true         # also generate .pptx (one slide per antibody)
+                                 # requires: pip install python-pptx

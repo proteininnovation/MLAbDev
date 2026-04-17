@@ -1,21 +1,142 @@
 # config/transformer_lm.yaml
-# Transformer LM Configuration for Antibody Polyreactivity Prediction
+# ═══════════════════════════════════════════════════════════════════
+#  TransformerLM Configuration
+#  IPI Antibody Developability Prediction Platform
+# ═══════════════════════════════════════════════════════════════════
+#
+#  ADAPTIVE BY DEFAULT — set auto_scale: true and never touch this file.
+#  The model configures itself for any dataset × any language model.
+#
+# ── Two-axis continuous scaling ────────────────────────────────────
+#
+#  Axis 1  n_norm = log10(n/500) / log10(1000)
+#    Controls depth, batch, epochs, lr.
+#    Identical regardless of which LM you use.
+#
+#  Axis 2  d_norm = log10((n/emb)/5) / log10(100)
+#    = samples per embedding dimension
+#    Controls hidden_dim and dropout.
+#    THIS is why LM choice matters:
+#
+#    antiberta2(1024) on 8k samples → n/emb = 7.8  (data-starved)
+#      → hd=128, dropout=0.40  (small model, heavy regularisation)
+#    ablang(480) on same 8k samples → n/emb = 16.7
+#      → hd=192, dropout=0.37  (larger model, less regularisation)
+#    ablang(480) on 245k samples    → n/emb = 510
+#      → hd=512, dropout=0.12  (maximum model, minimal regularisation)
+#
+#  Verified outputs — all 4 LMs × your 3 datasets:
+#
+#  IPI_SEC (8k, 21% Fail)
+#    ablang(480)          n/emb=16.7  hd=192 nl=3 dr=0.37 bs=32  ep=40
+#    antiberty(512)       n/emb=15.7  hd=192 nl=3 dr=0.37 bs=32  ep=40
+#    antiberta2(1024)     n/emb= 7.8  hd=128 nl=3 dr=0.40 bs=32  ep=40  ← smaller!
+#    antiberta2-cssp(1024)n/emb= 7.8  hd=128 nl=3 dr=0.40 bs=32  ep=40
+#
+#  IPI_PSR (12k, 52/48%)
+#    ablang(480)          n/emb=25.0  hd=192 nl=3 dr=0.34 bs=32  ep=37
+#    antiberty(512)       n/emb=23.5  hd=192 nl=3 dr=0.34 bs=32  ep=37
+#    antiberta2(1024)     n/emb=11.7  hd=128 nl=3 dr=0.37 bs=32  ep=37  ← smaller!
+#    antiberta2-cssp(1024)n/emb=11.7  hd=128 nl=3 dr=0.37 bs=32  ep=37
+#
+#  DS1 (245k, 53/47%)
+#    ablang(480)          n/emb=510   hd=512 nl=5 dr=0.12 bs=128 ep=15
+#    antiberty(512)       n/emb=479   hd=512 nl=5 dr=0.12 bs=128 ep=15
+#    antiberta2(1024)     n/emb=239   hd=448 nl=5 dr=0.15 bs=128 ep=15  ← slightly smaller
+#    antiberta2-cssp(1024)n/emb=239   hd=448 nl=5 dr=0.15 bs=128 ep=15
+#
+#  Future LMs with any embedding size will also work automatically.
+# ═══════════════════════════════════════════════════════════════════
 
+auto_scale: false     # recommended: two-axis adaptive scaling
+amp: false          # set true for CUDA GPU (2–4x speedup)
+
+# ── model (used only when auto_scale: false) ──────────────────────
 model:
-  hidden_dim: 128
-  num_heads: 8
-  num_layers: 6
-  dim_feedforward: 512
-  dropout: 0.3
+  hidden_dim: 128   # must be divisible by num_heads
+  num_heads:  6     #8
+  num_layers: 3      #3
+  dropout:    0.38  # DS1 0.15-0.2 ablang-antiberta    # 0.38 for IPI PSR, 0.40 for IPI SEC — smaller for larger datasets
+  #dim_feedforward: 512
 
-
+# ── training (lr auto-set by scaling rule when auto_scale: true) ──lr:0.0000141
 training:
-  epochs: 20
-  batch_size: 16
-  lr: 0.00001
-  weight_decay: 0.001
+  epochs:       55
+  batch_size:   32
+  lr:         0.00001
+  weight_decay: 0.001 #0.0005 for 245k sequences like DS1)  # IPI PSR data 0.001 #0.001 ()
 
+# ── LR scheduler ──────────────────────────────────────────────────
 scheduler:
-  mode: min
-  factor: 0.5
-  patience: 3
+  mode:    min
+  factor:  0.5
+  patience: 7  #5 for DS1  # 7 for IPI dataset
+
+# ── loss function ─────────────────────────────────────────────────
+# type: auto  (recommended — selects from class distribution + n)
+#
+#   minority class rate   n             loss selected
+#   ─────────────────────────────────────────────────────────────
+#   < 15%                 any           focal  γ=2.0
+#   15–30%                any           focal  γ=1.5  (e.g. IPI SEC)
+#   ≥ 30%  (balanced)     > 50 000      label_smooth  ε=0.10
+#   ≥ 30%  (balanced)     ≤ 50 000      weighted_ce
+#
+loss:
+  type:            auto #DS1=label_smooth   # ce for small IPI set         #auto
+  focal_gamma:     2.0        # overrides auto γ when type: focal
+  label_smoothing: 0.05       # overrides auto ε when type: label_smooth
+
+
+# How tp use loss type: 
+#   ce    Balanced data (40–60%) —  PSR case 
+#   weighted_ce     Mildly imbalanced (20–40%)
+#   label_smoothBalanced + want calibrated probabilities
+#   weighted_label_smooth     Imbalanced + calibration. 
+#   focal     Severe imbalance (<10% minority)
+#   auto.     Let the model decide based on pos_rate
+
+# ─────────────────────────────────────────────────────────────────
+# MANUAL OVERRIDE EXAMPLES  (set auto_scale: false to use these)
+# ─────────────────────────────────────────────────────────────────
+
+# ── Any LM, tiny dataset (n<500) ─────────────────────────────────
+# auto_scale: false
+# model: {hidden_dim: 64, num_heads: 8, num_layers: 1, dropout: 0.50}
+# training: {epochs: 60, batch_size: 8, lr: 0.0000071, weight_decay: 0.001}
+
+# ── IPI SEC + antiberta2 (n=8k, n/emb=7.8) ───────────────────────
+# auto_scale: false
+# model: {hidden_dim: 128, num_heads: 8, num_layers: 3, dropout: 0.40}
+# training: {epochs: 40, batch_size: 32, lr: 0.0000141, weight_decay: 0.001}
+# loss: {type: focal, focal_gamma: 1.5}
+
+# ── IPI PSR + ablang (n=12k, n/emb=25.0) ─────────────────────────
+# auto_scale: false
+# model: {hidden_dim: 192, num_heads: 8, num_layers: 3, dropout: 0.34}
+# training: {epochs: 37, batch_size: 32, lr: 0.0000141, weight_decay: 0.001}
+# loss: {type: weighted_ce}
+
+# ── DS1 + antiberta2 (n=245k, n/emb=239) — GPU recommended ───────
+# auto_scale: false
+# amp: true
+# model: {hidden_dim: 448, num_heads: 8, num_layers: 5, dropout: 0.15}
+# training: {epochs: 15, batch_size: 128, lr: 0.0000283, weight_decay: 0.0005}
+# loss: {type: label_smooth, label_smoothing: 0.10}
+
+#Final recommended configs for transformer_lm.py (✓ indicates best model for each dataset):
+
+#Dataset          emb          n      n/emb   hd  l   dr    bs  ep   wd      pat.  lr
+#────────────────────────────────────────────────────────────────────────────────
+#IPI SEC          ablang    8,000    16.7    128  2  0.37  32  42  0.001    7       0.00005
+#IPI SEC          antiberta2 8,000    7.8    128  2  0.42  32  42  0.001    7       0.00005
+#IPI PSR          ablang   11,000    22.9    128  2  0.35  32  40  0.001    7.      0.00005 
+#IPI PSR          antiberty 11,000   21.5    128  2  0.36  32  40  0.001    7       0.00005
+#IPI PSR          antiberta2 11,000  10.7    128  2  0.40  32  40  0.001    7  ✓    0.00005
+#DS1              ablang  240,000   500.0    128  3  0.15  32  20  0.0005   5  ✓.   0.00005
+#DS1              antiberty 240,000 468.8    128  3  0.15  32  20  0.0005   5  ✓.   0.00005
+#DS1              antiberta2 240,000 234.4   128  3  0.20  32  20  0.0005   5       0.00005
+#large(500k)      ablang  500,000  1041.7    128  3  0.15  32  15  0.0005   5       0.00005
+#large(500k)      antiberty 500,000 976.6    128  3  0.15  32  15  0.0005   5       0.00005
+#large(500k)      antiberta2 500,000 488.3   128  3  0.15  32  15  0.0005   5       0.00005   
+

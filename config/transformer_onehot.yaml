@@ -1,31 +1,251 @@
 # config/transformer_onehot.yaml
-# Transformer One-Hot Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# MODE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   mode: manual  (default)
+#     Every value below is used exactly as written.
+#
+#   mode: auto
+#     At the start of train() or kfold_validation(), the model reads n and
+#     pos_rate from the actual data and derives ALL model + training settings
+#     automatically. Every value under [model] and [training] below is IGNORED.
+#     Just change mode to auto — no other edits needed.
+#
+#     The following sections are ALWAYS read from this file regardless of mode:
+#       • sequence_lengths   — must match your actual sequences
+#       • interpretability   — speed/quality tradeoff, not data-dependent
+#       • mutagenesis        — amino acid alphabet, never changes
+#       • training.epochs    — treated as a hard cap in auto mode
+#
+#     Auto size tiers (derived from n):
+#       xs  n < 5k     hidden=64,  layers=4, ffn=256,  dropout=0.40, batch=16,  patience=12, lr=5e-5
+#       sm  5k–20k     hidden=64,  layers=4, ffn=256,  dropout=0.30, batch=64,  patience=5,  lr=1e-4
+#       md  20k–80k    hidden=192, layers=6, ffn=768,  dropout=0.20, batch=64,  patience=8,  lr=2e-4
+#       lg  80k–200k   hidden=256, layers=8, ffn=1024, dropout=0.15, batch=128, patience=7,  lr=4e-4
+#       xl  >200k      hidden=256, layers=8, ffn=1024, dropout=0.10, batch=256, patience=7,  lr=8e-4
+#
+#     Auto balance tiers (derived from pos_rate):
+#       balanced   40–60%       → loss: ce
+#       mild       20–40%       → loss: weighted_ce
+#       moderate   10–20%       → loss: weighted_ce
+#       severe     <10%         → loss: focal  (+warning at <5%)
+#       large+imb  n>80k, <40%  → loss: focal  (overrides weighted_ce)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# WORKFLOW: kfold first, then full-data train
+# ───────────────────────────────────────────
+#   Step 1 — kfold_validation()
+#     • Measures true generalisation AUC (what you report)
+#     • Read mean best epoch from the per-fold loss curve plots
+#
+#   Step 2 — train() on full dataset
+#     • Set epochs = mean best epoch from Step 1  (see training.epochs below)
+#     • No early stopping — epoch count is fixed from kfold results
+#     • This is the model you deploy for screening
+#
+#   Why not deploy the kfold best-fold model directly?
+#     It was trained on only ~89% of data (1 fold held out).
+#     The full-data model is strictly better for production use.
+#
+#   Why not skip kfold and just train()?
+#     No honest AUC estimate. Train AUC on full data is always inflated.
+#
+# ─────────────────────────────────────────────────────────────────────────────
 
-# config/transformer_onehot.yaml
-# Transformer One-Hot Configuration for Antibody Polyreactivity Prediction
+mode: manual   # 'manual' | 'auto'
 
+
+# ── Model architecture ────────────────────────────────────────────────────────
+# Tuned for BEST ACCURACY on 12,000 antibodies, balanced classes (~50/50).
+# head_dim = hidden_dim / num_heads = 128 / 8 = 16  ✓
+# Estimated runtime: ~30 min for 9-fold CV (50 ep cap, early stopping ~ep 20–25)
 model:
-  hidden_dim: 128
-  num_heads: 8
-  num_layers: 6
-  dim_feedforward: 512
-  dropout: 0.2
+  hidden_dim: 128        # 2.36M params — best accuracy config for 12k
+  num_heads: 8           # 128 / 8 = 16 per head  ✓
+  num_layers: 4          # 4 layers per branch (2 branches total = 8 transformer layers)
+  dim_feedforward: 512   # 4× hidden_dim — standard ratio
+  # [FIX-C] raised 0.3 → 0.4
+  #   params:samples at hidden=128, n=12k ≈ 143:1 — high memorisation risk
+  #   for one-hot models (no biochemical prior).  0.4 is the standard
+  #   recommendation for this regime.  Lower to 0.2 only when n > 50k.
+  dropout: 0.38 # IPI=0.4
 
+
+# ── Sequence lengths ──────────────────────────────────────────────────────────
+# Always used — in both manual and auto mode.
+# Must match the actual lengths in your dataset.
 sequence_lengths:
-  max_vh_len: 135      # Maximum length of VH sequence (after padding)
-  max_vl_len: 135      # Maximum length of VL sequence
-  max_hcdr3_len: 25    # Maximum length of HCDR3
+  max_vh_len: 135
+  max_vl_len: 135
+  max_hcdr3_len: 25
 
+
+# ── Training ──────────────────────────────────────────────────────────────────
+# These values are used in manual mode only — EXCEPT training.epochs,
+# which is always respected as a hard cap even in auto mode.
 training:
-  epochs: 20
-  batch_size: 16
-  lr: 0.0001
-  weight_decay: 1e-5
-  val_split: 0.0       # Fraction for validation (0.0 = full training, 0.2 = 80/20 split)
+  epochs: 35             # 50 for small dataset Hard cap for kfold_validation() — fold 6 needed ep24.
+                         # ── IMPORTANT for final train() ──────────────────
+                         # After kfold completes, read the mean best epoch
+                         # from your per-fold loss curve plots, then set:
+                         #   epochs: <mean_best_epoch>   ← e.g. 19
+                         # and re-run train() on the full dataset.
+                         # No early stopping — the epoch count is fixed.
 
-mutagenesis:
-  amino_acids: "ACDEFGHIKLMNPQRSTVWY"  # Amino acids for in silico mutagenesis
+  batch_size: 32         # 32 for IPI 10k antibodies, 158 gradient steps/epoch at n=12k
+                         # Keep at 64 — larger model benefits from more
+                         # gradient updates per epoch, not fewer
 
+  lr: 0.00005   #IPI=0.00001 #0.00005 for DS1            # Conservative for h=128 — larger model needs
+                         # lower LR to stabilise than h=64
+
+  # [FIX-C] raised 1e-4 → 1e-3
+  #   L2 regularisation must be strong at params:samples ≈ 143:1.
+  #   1e-4 was the correct default for n > 100k; 1e-3 is appropriate for n ≈ 10–20k.
+  #   Reduce to 1e-4 only when n > 50k.
+  weight_decay: 0.001
+
+  # [FIX-C] changed ce → label_smooth for balanced data
+  #   'ce' provides no calibration penalty — the model can grow arbitrarily
+  #   confident on training sequences.  'label_smooth' (ε=0.1) prevents this
+  #   and acts as a soft regulariser on the output distribution.
+  #   For PSR at pos_rate ≈ 52 % this is the correct default.
+  #
+  #   ┌──────────────────────────┬────────────────┬───────────────────────────────┐
+  #   │ Your dataset             │ min_class_rate │ loss_type to use              │
+  #   ├──────────────────────────┼────────────────┼───────────────────────────────┤
+  #   │ PSR 12k balanced         │ ≥ 40%          │ label_smooth   ← best F1/Acc  │
+  #   │ SEC 8k (21% fail)        │ 20–40%         │ weighted_label_smooth         │
+  #   │ Any imbalanced dataset   │ 10–20%         │ weighted_label_smooth         │
+  #   │ Severely imbalanced      │ < 10%          │ focal                         │
+  #   └──────────────────────────┴────────────────┴───────────────────────────────┘
+  loss_type:  auto  # IPI= ce  ##label_smooth for DS1
+  label_smoothing: 0.1         # ε for label_smooth / weighted_label_smooth (range: 0.05–0.15)
+  focal_gamma: 2.0             # focal only
+  focal_alpha: 0.25            # focal only
+
+  patience: 7     #10     # ↑ raised from 7 — label_smooth converges slower
+                         # than ce; model needs more epochs for probs to spread
+                         # from 0.5 before early stopping fires
+
+
+# ── Scheduler ────────────────────────────────────────────────────────────────
+# Controls ReduceLROnPlateau — always used in both manual and auto mode.
+#
+#   patience  epochs without val_AUC improvement before LR is halved
+#             ┌──────────────────────┬──────────────────────────────────────┐
+#             │ loss_type            │ scheduler.patience                   │
+#             ├──────────────────────┼──────────────────────────────────────┤
+#             │ label_smooth         │ 5  ← probs take time to leave 0.5   │
+#             │ weighted_label_smooth│ 5                                    │
+#             │ ce / weighted_ce     │ 3  ← faster convergence signal      │
+#             │ focal                │ 3                                    │
+#             └──────────────────────┴──────────────────────────────────────┘
+#
+#   factor    LR multiplier on plateau (0.5 = halve the LR)
+scheduler:
+  mode: min        # min = step on v_loss (smooth, matches transformer_lm)
+                   # DO NOT change to max — v_auc is too noisy with StratifiedGroupKFold
+  patience: 5 #3      # safe with v_loss; was dangerous when stepping on v_auc
+  factor: 0.5
+
+
+# ── Interpretability ─────────────────────────────────────────────────────────
+# Always used — in both manual and auto mode.
 interpretability:
-  ig_n_steps: 50       # Number of steps for Integrated Gradients
-  top_features: 60     # Number of top features for global attribution plot
+  ig_n_steps: 200        #  50  → fast dev/debugging
+                         # 200  → good accuracy, ~5× faster  (recommended daily use)
+                         # 1000 → publication-quality attributions (final run only)
+  top_features: 60       # positions shown in global IG bar chart
+
+
+# ── Mutagenesis ───────────────────────────────────────────────────────────────
+# Always used — in both manual and auto mode.
+mutagenesis:
+  amino_acids: "ACDEFGHIKLMNPQRSTVWY"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUICK REFERENCE — when to change each setting
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   Want faster iteration (dev/debugging)?
+#     hidden_dim: 64
+#     num_heads: 4
+#     num_layers: 4
+#     dim_feedforward: 256
+#     weight_decay: 0.001
+#     patience: 5
+#     → ~6 min for 9-fold vs ~30 min above
+#
+#   Different dataset? → just switch mode:
+#     mode: auto
+#
+#   Overfitting (train_AUC >> val_AUC on loss curves):
+#     dropout: 0.5
+#     weight_decay: 0.005
+#
+#   Underfitting (train_AUC ≈ val_AUC, both low):
+#     dropout: 0.2
+#     lr: 0.0003
+#     weight_decay: 0.0001
+#
+#   Dataset becomes imbalanced (e.g. SEC filter, pos_rate ~20%):
+#     loss_type: weighted_label_smooth
+#
+#   Balanced data — want highest accuracy + F1?  (already set as default)
+#     loss_type: label_smooth
+#     label_smoothing: 0.1
+#
+#   Imbalanced data (e.g. SEC, minority 20–40%) — want highest accuracy + F1?
+#     loss_type: weighted_label_smooth
+#     label_smoothing: 0.1
+#
+#   Severely imbalanced (minority < 10%):
+#     loss_type: focal
+#
+#   Faster IG for daily screening:
+#     ig_n_steps: 50
+#   Publication-quality attributions:
+#     ig_n_steps: 1000
+#
+#   Turn off augmentation (e.g. large datasets, or when training for IG only):
+#     augmentation:
+#       pos_drop_p: 0.0
+#       aa_sub_p:   0.0
+
+
+# ── Data Augmentation ─────────────────────────────────────────────────────────
+# Applied ONLY to training data — NEVER to validation, test, predict, or IG.
+# Both values are per-position probabilities applied independently each epoch.
+#
+#   pos_drop_p  [AUG-1] Position dropout
+#     Zeros an entire amino acid position (all 20 dims) with this probability.
+#     Effect  : forces the model to learn combinations rather than single-position
+#               signals, improving generalisation on unseen CDR3 topologies.
+#     Recommended : 0.05 for n ≤ 20k,  0.02 for n ≤ 80k,  0.0 for n > 80k
+#     Disable     : set to 0.0
+#
+#   aa_sub_p    [AUG-2] Conservative amino acid substitution
+#     Randomly swaps an amino acid for a biochemically similar one:
+#       K↔R  (positive charged)      D↔E  (negative charged)
+#       S↔T  (polar small)           L↔I↔V  (aliphatic hydrophobic)
+#       N↔Q  (amide)                 F↔Y  (aromatic)
+#       A↔G  (small/flexible)
+#     Effect  : teaches the model that biochemically equivalent residues predict
+#               similar outcomes — a prior that one-hot cannot encode natively.
+#     Recommended : 0.05 for n ≤ 20k,  0.02 for n ≤ 80k,  0.0 for n > 80k
+#     Disable     : set to 0.0
+#
+#   Impact on IG: NONE — augmentation is disabled during integrated gradients
+#   attribution regardless of these settings.  IG always runs on the original
+#   unmodified sequence.
+#
+#   Tip: if val_AUC drops after adding augmentation, reduce both values to 0.02.
+#   Tip: for large datasets (n > 80k) dropout regularisation alone is sufficient;
+#        set both to 0.0 and rely on dropout + weight_decay.
+augmentation:
+  pos_drop_p: 0.0 #0.05   # set to 0.0 to disable position dropout
+  aa_sub_p:   0.0 #0.05   # set to 0.0 to disable AA substitution

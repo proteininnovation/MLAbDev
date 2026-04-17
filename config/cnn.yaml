@@ -1,0 +1,127 @@
+# config/cnn.yaml
+# ═══════════════════════════════════════════════════════════════════
+#  1D-CNN Configuration
+#  IPI Antibody Developability Prediction Platform
+# ═══════════════════════════════════════════════════════════════════
+#
+#  ADAPTIVE BY DEFAULT — set auto_scale: true and never touch this file.
+#  The model configures itself for any dataset × any language model.
+#
+# ── Two-axis continuous scaling ────────────────────────────────────
+#
+#  Axis 1  n_norm = log10(n/500) / log10(1000)
+#    Controls batch_size, epochs, lr.
+#
+#  Axis 2  d_norm = log10((n/emb)/5) / log10(100)
+#    Controls hidden_dim (FC head) and dropout.
+#
+#  CNN-specific differences from transformer_lm:
+#    • hidden_dim ceiling = 256  (vs 512)  — head only, not attention
+#    • dropout ceiling    = 0.45 (vs 0.50) — BatchNorm regularises internally
+#    • batch_size ceiling = 128  (vs 256)  — CNN heavier per sample
+#    • lr base            = 1e-4 (vs 1e-5) — CNNs converge faster
+#    • epochs base        = 50→10 (vs 60→10)
+#
+#  Architecture (fixed — not scaled):
+#    ResidualBlock(1→128,   kernel=5, dilation=1)
+#    ResidualBlock(128→256, kernel=5, dilation=2)
+#    ResidualBlock(256→256, kernel=5, dilation=4)
+#    AdaptiveMaxPool1d(1)
+#    Linear(256→hidden_dim) + BatchNorm + GELU + Dropout
+#    Linear(hidden_dim→2)
+#
+# ── Verified outputs — all 4 LMs × your 3 datasets ────────────────
+#
+#  IPI_SEC (8k, 21% Fail)
+#    ablang(480)           n/emb=16.7  hd=128 dr=0.33 bs=32  ep=38
+#    antiberty(512)        n/emb=15.7  hd=128 dr=0.33 bs=32  ep=38
+#    antiberta2(1024)      n/emb= 7.8  hd= 64 dr=0.37 bs=32  ep=38  ← floor
+#    antiberta2-cssp(1024) n/emb= 7.8  hd= 64 dr=0.37 bs=32  ep=38  ← floor
+#
+#  IPI_PSR (12k, 52/48%)
+#    ablang(480)           n/emb=25.0  hd=128 dr=0.30 bs=32  ep=33
+#    antiberty(512)        n/emb=23.5  hd=128 dr=0.30 bs=32  ep=33
+#    antiberta2(1024)      n/emb=11.7  hd= 64 dr=0.34 bs=32  ep=37  ← floor
+#    antiberta2-cssp(1024) n/emb=11.7  hd= 64 dr=0.34 bs=32  ep=37  ← floor
+#
+#  DS1 (245k, 53/47%)
+#    ablang(480)           n/emb=510   hd=256 dr=0.12 bs=128 ep=10
+#    antiberty(512)        n/emb=479   hd=256 dr=0.12 bs=128 ep=10
+#    antiberta2(1024)      n/emb=239   hd=192 dr=0.14 bs=128 ep=10
+#    antiberta2-cssp(1024) n/emb=239   hd=192 dr=0.14 bs=128 ep=10
+#
+#  Note: CNN hidden_dim floor = max(64, min(128, emb/16))
+#    antiberta2(1024): floor = max(64, min(128, 64)) = 64
+#    ablang(480):      floor = max(64, min(128, 30)) = 64  (formula wins)
+# ═══════════════════════════════════════════════════════════════════
+
+auto_scale: false    # recommended: two-axis adaptive scaling
+amp: false          # set true for CUDA GPU (2–4x speedup)
+
+# ── model (used only when auto_scale: false) ──────────────────────
+model:
+  hidden_dim: 128   # FC head dimension (64–256)
+  dropout:    0.35  # applied after pool and after first FC layer
+
+# ── training (lr/batch/epochs auto-set when auto_scale: true) ─────
+training:
+  epochs:       20          # YAML ceiling — auto_scale capped here
+  batch_size:   32
+  lr:           0.0001      # 1e-4 base (CNN converges faster than Transformer)
+  weight_decay: 0.01        # L2 regularisation — anti-memorization
+
+# ── LR scheduler ──────────────────────────────────────────────────
+scheduler:
+  mode:     min
+  factor:   0.5
+  patience: 6               # read by train_model() via config
+
+# ── loss function ─────────────────────────────────────────────────
+# type: auto  (recommended — selects from class distribution + n)
+#
+#   minority class rate   n             loss selected
+#   ─────────────────────────────────────────────────────────────
+#   < 15%                 any           focal  γ=2.0
+#   15–30%                any           focal  γ=1.5  (e.g. IPI SEC)
+#   ≥ 30%  (balanced)     > 50 000      label_smooth  ε=0.10
+#   ≥ 30%  (balanced)     ≤ 50 000      weighted_ce
+#
+loss:
+  type:            auto
+  focal_gamma:     2.0
+  label_smoothing: 0.05
+
+
+# ─────────────────────────────────────────────────────────────────
+# MANUAL OVERRIDE EXAMPLES  (set auto_scale: false to use these)
+# ─────────────────────────────────────────────────────────────────
+
+# ── Any LM, tiny dataset (n<500) ─────────────────────────────────
+# auto_scale: false
+# model:    {hidden_dim: 64, dropout: 0.45}
+# training: {epochs: 50, batch_size: 8, lr: 0.0001, weight_decay: 0.01}
+
+# ── IPI SEC + antiberta2 (n=8k, n/emb=7.8, 21% Fail) ─────────────
+# auto_scale: false
+# model:    {hidden_dim: 64, dropout: 0.37}
+# training: {epochs: 38, batch_size: 32, lr: 0.0001, weight_decay: 0.01}
+# loss:     {type: focal, focal_gamma: 1.5}
+
+# ── IPI PSR + ablang (n=12k, n/emb=25.0) ─────────────────────────
+# auto_scale: false
+# model:    {hidden_dim: 128, dropout: 0.30}
+# training: {epochs: 35, batch_size: 32, lr: 0.0001, weight_decay: 0.01}
+# loss:     {type: weighted_ce}
+
+# ── IPI PSR + antiberta2 (n=12k, n/emb=11.7) ─────────────────────
+# auto_scale: false
+# model:    {hidden_dim: 64, dropout: 0.34}
+# training: {epochs: 37, batch_size: 32, lr: 0.0001, weight_decay: 0.01}
+# loss:     {type: weighted_ce}
+
+# ── DS1 + antiberta2 (n=245k, n/emb=239) — GPU recommended ───────
+# auto_scale: false
+# amp: true
+# model:    {hidden_dim: 192, dropout: 0.14}
+# training: {epochs: 10, batch_size: 128, lr: 0.0002828, weight_decay: 0.005}
+# loss:     {type: label_smooth, label_smoothing: 0.10}
