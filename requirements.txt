@@ -1,3 +1,4 @@
+captum
 xgboost==2.1.1
 scikit-learn
 pandas
@@ -16,3 +17,13 @@ mlflow
 Levenshtein
 rjieba
 openpyxl
+abmap
+shap
+tf-keras
+python-pptx
+gradient
+peft
+
+
+
+
